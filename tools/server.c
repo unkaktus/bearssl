@@ -90,8 +90,9 @@ host_bind(const char *host, const char *port, int verbose)
 		if (addr != NULL) {
 			inet_ntop(p->ai_family, addr, tmp, sizeof tmp);
 		} else {
-			sprintf(tmp, "<unknown family: %d>",
-				(int)sa->sa_family);
+			snprintf(tmp, INET6_ADDRSTRLEN + 50,
+				 "<unknown family: %d>",
+				 (int)sa->sa_family);
 		}
 		if (verbose) {
 			fprintf(stderr, "binding to: %s\n", tmp);
@@ -168,8 +169,9 @@ accept_client(int server_fd, int verbose)
 			break;
 		}
 		if (name == NULL) {
-			sprintf(tmp, "<unknown: %lu>",
-				(unsigned long)sa.sa_family);
+			snprintf(tmp, INET6_ADDRSTRLEN + 50,
+				 "<unknown: %lu>",
+				 (unsigned long)sa.sa_family);
 			name = tmp;
 		}
 		fprintf(stderr, "accepting connection from: %s\n", name);

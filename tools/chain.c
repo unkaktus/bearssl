@@ -124,7 +124,7 @@ do_chain(int argc, char *argv[])
 		for (u = 0; u < num; u ++) {
 			char tmp[50];
 
-			sprintf(tmp, "CERT%ld", ctr ++);
+			snprintf(tmp, 50, "CERT%ld", ctr ++);
 			print_blob(tmp, xcs[u].data, xcs[u].data_len);
 			xfree(xcs[u].data);
 		}

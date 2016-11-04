@@ -428,8 +428,9 @@ read_file(const char *name, size_t *len)
 #ifdef DIRNAME
 	char *dname;
 
-	dname = xmalloc(strlen(DIRNAME) + strlen(name) + 2);
-	sprintf(dname, "%s/%s", DIRNAME, name);
+	size_t dname_len = strlen(DIRNAME) + strlen(name) + 2;
+	dname = xmalloc(dname_len);
+	snprintf(dname, dname_len, "%s/%s", DIRNAME, name);
 	name = dname;
 #endif
 	f = fopen(name, "rb");

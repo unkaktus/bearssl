@@ -616,7 +616,7 @@ test_HMAC_CT(const br_hash_class *digest_class,
 						(unsigned)hlen2);
 					exit(EXIT_FAILURE);
 				}
-				sprintf(tmp, "HMAC CT %u,%u,%u",
+				snprintf(tmp, 30, "HMAC CT %u,%u,%u",
 					(unsigned)u, (unsigned)v, (unsigned)w);
 				check_equals(tmp, buf1, buf2, hlen1);
 			}
