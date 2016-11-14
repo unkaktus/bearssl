@@ -35,7 +35,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/poll.h>
 
 #include "brssl.h"
 #include "bearssl.h"
@@ -58,26 +57,30 @@ host_connect(const char *host, const char *port, int verbose)
 	}
 	fd = -1;
 	for (p = si; p != NULL; p = p->ai_next) {
-		struct sockaddr *sa;
-		void *addr;
-		char tmp[INET6_ADDRSTRLEN + 50];
-
-		sa = (struct sockaddr *)p->ai_addr;
-		if (sa->sa_family == AF_INET) {
-			addr = &((struct sockaddr_in *)sa)->sin_addr;
-		} else if (sa->sa_family == AF_INET6) {
-			addr = &((struct sockaddr_in6 *)sa)->sin6_addr;
-		} else {
-			addr = NULL;
-		}
-		if (addr != NULL) {
-			inet_ntop(p->ai_family, addr, tmp, sizeof tmp);
-		} else {
-			snprintf(tmp, INET6_ADDRSTRLEN + 50,
-				 "<unknown family: %d>",
-				 (int)sa->sa_family);
-		}
 		if (verbose) {
+			struct sockaddr *sa;
+			void *addr;
+			char tmp[INET6_ADDRSTRLEN + 50];
+
+			sa = (struct sockaddr *)p->ai_addr;
+			if (sa->sa_family == AF_INET) {
+				addr = &((struct sockaddr_in *)sa)->sin_addr;
+			} else if (sa->sa_family == AF_INET6) {
+				addr = &((struct sockaddr_in6 *)sa)->sin6_addr;
+			} else {
+				addr = NULL;
+			}
+			if (addr != NULL) {
+				if (!inet_ntop(p->ai_family, addr,
+					tmp, sizeof tmp))
+				{
+					strcpy(tmp, "<invalid>");
+				}
+			} else {
+				snprintf(tmp, INET6_ADDRSTRLEN + 50,
+                                         "<unknown family: %d>",
+					(int)sa->sa_family);
+			}
 			fprintf(stderr, "connecting to: %s\n", tmp);
 		}
 		fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
@@ -247,7 +250,11 @@ do_client(int argc, char *argv[])
 				usage_client();
 				goto client_exit_error;
 			}
-			iobuf_len = strtoul(arg, 0, 10);
+			iobuf_len = parse_size(arg);
+			if (iobuf_len == (size_t)-1) {
+				usage_client();
+				goto client_exit_error;
+			}
 		} else if (eqstr(arg, "-CA")) {
 			if (++ i >= argc) {
 				fprintf(stderr,

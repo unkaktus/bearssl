@@ -35,7 +35,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/poll.h>
 
 #include "brssl.h"
 #include "bearssl.h"
@@ -63,7 +62,6 @@ host_bind(const char *host, const char *port, int verbose)
 		struct sockaddr_in6 sa6;
 		size_t sa_len;
 		void *addr;
-		char tmp[INET6_ADDRSTRLEN + 50];
 		int opt;
 
 		sa = (struct sockaddr *)p->ai_addr;
@@ -87,14 +85,20 @@ host_bind(const char *host, const char *port, int verbose)
 			addr = NULL;
 			sa_len = p->ai_addrlen;
 		}
-		if (addr != NULL) {
-			inet_ntop(p->ai_family, addr, tmp, sizeof tmp);
-		} else {
-			snprintf(tmp, INET6_ADDRSTRLEN + 50,
-				 "<unknown family: %d>",
-				 (int)sa->sa_family);
-		}
 		if (verbose) {
+			char tmp[INET6_ADDRSTRLEN + 50];
+
+			if (addr != NULL) {
+				if (!inet_ntop(p->ai_family, addr,
+					tmp, sizeof tmp))
+				{
+					strcpy(tmp, "<invalid>");
+				}
+			} else {
+				snprintf(tmp, INET6_ADDRSTRLEN + 50,
+                                         "<unknown family: %d>",
+					(int)sa->sa_family);
+			}
 			fprintf(stderr, "binding to: %s\n", tmp);
 		}
 		fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
@@ -163,8 +167,8 @@ accept_client(int server_fd, int verbose)
 				tmp, sizeof tmp);
 			break;
 		case AF_INET6:
-			name = inet_ntop(AF_INET,
-				&((struct sockaddr_in *)&sa)->sin_addr,
+			name = inet_ntop(AF_INET6,
+				&((struct sockaddr_in6 *)&sa)->sin6_addr,
 				tmp, sizeof tmp);
 			break;
 		}
@@ -640,7 +644,11 @@ do_server(int argc, char *argv[])
 				usage_server();
 				goto server_exit_error;
 			}
-			iobuf_len = strtoul(arg, 0, 10);
+			iobuf_len = parse_size(arg);
+			if (iobuf_len == (size_t)-1) {
+				usage_server();
+				goto server_exit_error;
+			}
 		} else if (eqstr(arg, "-cache")) {
 			if (++ i >= argc) {
 				fprintf(stderr,
@@ -655,7 +663,11 @@ do_server(int argc, char *argv[])
 				usage_server();
 				goto server_exit_error;
 			}
-			cache_len = strtoul(arg, 0, 10);
+			cache_len = parse_size(arg);
+			if (cache_len == (size_t)-1) {
+				usage_server();
+				goto server_exit_error;
+			}
 		} else if (eqstr(arg, "-cert")) {
 			if (++ i >= argc) {
 				fprintf(stderr,
@@ -1039,9 +1051,7 @@ server_exit:
 		}
 		xfree(chain);
 	}
-	if (sk != NULL) {
-		free_private_key(sk);
-	}
+	free_private_key(sk);
 	xfree(iobuf);
 	xfree(cache);
 	if (fd >= 0) {
