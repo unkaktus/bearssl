@@ -92,7 +92,8 @@ host_bind(const char *host, const char *port, int verbose)
 				if (!inet_ntop(p->ai_family, addr,
 					tmp, sizeof tmp))
 				{
-					strcpy(tmp, "<invalid>");
+					strlcpy(tmp, "<invalid>",
+                                                INET6_ADDRSTRLEN + 50);
 				}
 			} else {
 				snprintf(tmp, INET6_ADDRSTRLEN + 50,
