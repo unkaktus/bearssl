@@ -74,10 +74,12 @@ host_connect(const char *host, const char *port, int verbose)
 				if (!inet_ntop(p->ai_family, addr,
 					tmp, sizeof tmp))
 				{
-					strcpy(tmp, "<invalid>");
+					strlcpy(tmp, "<invalid>",
+                                                INET6_ADDRSTRLEN + 50);
 				}
 			} else {
-				sprintf(tmp, "<unknown family: %d>",
+				snprintf(tmp, INET6_ADDRSTRLEN + 50,
+                                         "<unknown family: %d>",
 					(int)sa->sa_family);
 			}
 			fprintf(stderr, "connecting to: %s\n", tmp);

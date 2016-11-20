@@ -92,17 +92,17 @@ print_ta_internals(br_x509_trust_anchor *ta, long ctr)
 {
 	char tmp[25];
 
-	sprintf(tmp, "TA%ld_DN", ctr);
+	snprintf(tmp, 25, "TA%ld_DN", ctr);
 	print_blob(tmp, ta->dn, ta->dn_len);
 	switch (ta->pkey.key_type) {
 	case BR_KEYTYPE_RSA:
-		sprintf(tmp, "TA%ld_RSA_N", ctr);
+		snprintf(tmp, 25, "TA%ld_RSA_N", ctr);
 		print_blob(tmp, ta->pkey.key.rsa.n, ta->pkey.key.rsa.nlen);
-		sprintf(tmp, "TA%ld_RSA_E", ctr);
+		snprintf(tmp, 25, "TA%ld_RSA_E", ctr);
 		print_blob(tmp, ta->pkey.key.rsa.e, ta->pkey.key.rsa.elen);
 		break;
 	case BR_KEYTYPE_EC:
-		sprintf(tmp, "TA%ld_EC_Q", ctr);
+		snprintf(tmp, 25, "TA%ld_EC_Q", ctr);
 		print_blob(tmp, ta->pkey.key.ec.q, ta->pkey.key.ec.qlen);
 		break;
 	default:
@@ -140,7 +140,7 @@ print_ta(br_x509_trust_anchor *ta, long ctr)
 		printf("\t\t\t{ .ec = {\n");
 		cname = curve_to_sym(ta->pkey.key.ec.curve);
 		if (cname == NULL) {
-			sprintf(tmp, "%d", ta->pkey.key.ec.curve);
+			snprintf(tmp, 25, "%d", ta->pkey.key.ec.curve);
 			cname = tmp;
 		}
 		printf("\t\t\t\t%s,\n", cname);

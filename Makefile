@@ -27,7 +27,7 @@
 # library archival command.
 
 CC = gcc
-CFLAGS = -W -Wall -Os -fPIC -I src -I inc
+CFLAGS = -std=c99 -W -Wall -Os -fPIC -I src -I inc
 #CFLAGS = -W -Wall -g -fPIC -I src -I inc
 LDFLAGS = 
 AR = ar -rcs

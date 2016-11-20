@@ -283,7 +283,7 @@ get_suite_name_ext(unsigned suite, char *dst, size_t len)
 
 	name = get_suite_name(suite);
 	if (name == NULL) {
-		sprintf(tmp, "unknown (0x%04X)", suite);
+		snprintf(tmp, 30, "unknown (0x%04X)", suite);
 		name = tmp;
 	}
 	n = 1 + strlen(name);
