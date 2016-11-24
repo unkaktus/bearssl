@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -151,6 +152,10 @@ usage_client(void)
 "   -hf names       add support for some hash functions (comma-separated)\n");
 	fprintf(stderr,
 "   -minhello len   set minimum ClientHello length (in bytes)\n");
+	fprintf(stderr,
+"   -fallback       send the TLS_FALLBACK_SCSV (i.e. claim a downgrade)\n");
+	fprintf(stderr,
+"   -noreneg        prohibit renegotiations\n");
 }
 
 /* see brssl.h */
@@ -179,6 +184,8 @@ do_client(int argc, char *argv[])
 	unsigned char *iobuf;
 	size_t iobuf_len;
 	size_t minhello_len;
+	int fallback;
+	uint32_t flags;
 	int fd;
 
 	retcode = 0;
@@ -198,6 +205,8 @@ do_client(int argc, char *argv[])
 	iobuf = NULL;
 	iobuf_len = 0;
 	minhello_len = (size_t)-1;
+	fallback = 0;
+	flags = 0;
 	fd = -1;
 	for (i = 0; i < argc; i ++) {
 		const char *arg;
@@ -378,6 +387,10 @@ do_client(int argc, char *argv[])
 				usage_client();
 				goto client_exit_error;
 			}
+		} else if (eqstr(arg, "-fallback")) {
+			fallback = 1;
+		} else if (eqstr(arg, "-noreneg")) {
+			flags |= BR_OPT_NO_RENEGOTIATION;
 		} else {
 			fprintf(stderr, "ERROR: unknown option: '%s'\n", arg);
 			usage_client();
@@ -459,7 +472,7 @@ do_client(int argc, char *argv[])
 	/*
 	 * Compute implementation requirements and inject implementations.
 	 */
-	suite_ids = xmalloc(num_suites * sizeof *suite_ids);
+	suite_ids = xmalloc((num_suites + 1) * sizeof *suite_ids);
 	br_ssl_client_zero(&cc);
 	br_ssl_engine_set_versions(&cc.eng, vmin, vmax);
 	dnhash = NULL;
@@ -559,6 +572,9 @@ do_client(int argc, char *argv[])
 			br_ssl_engine_set_ec(&cc.eng, &br_ec_prime_i31);
 		}
 	}
+	if (fallback) {
+		suite_ids[num_suites ++] = 0x5600;
+	}
 	br_ssl_engine_set_suites(&cc.eng, suite_ids, num_suites);
 
 	for (u = 0; hash_functions[u].name; u ++) {
@@ -608,9 +624,15 @@ do_client(int argc, char *argv[])
 	if (minhello_len != (size_t)-1) {
 		br_ssl_client_set_min_clienthello_len(&cc, minhello_len);
 	}
+	br_ssl_engine_set_all_flags(&cc.eng, flags);
 
 	br_ssl_engine_set_buffer(&cc.eng, iobuf, iobuf_len, bidi);
 	br_ssl_client_reset(&cc, sni, 0);
+
+	/*
+	 * We need to avoid SIGPIPE.
+	 */
+	signal(SIGPIPE, SIG_IGN);
 
 	/*
 	 * Connect to the peer.

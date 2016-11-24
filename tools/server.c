@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
+#include <signal.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -336,6 +337,11 @@ sp_choose(const br_ssl_server_policy_class **pctx,
 		case BR_SSLKEYX_ECDHE_RSA:
 			if (pc->sk->key_type == BR_KEYTYPE_RSA) {
 				choices->cipher_suite = st[u][0];
+				if (br_ssl_engine_get_version(&cc->eng)
+					< BR_TLS12)
+				{
+					hash_id = 0;
+				}
 				choices->hash_id = hash_id;
 				goto choose_ok;
 			}
@@ -343,6 +349,11 @@ sp_choose(const br_ssl_server_policy_class **pctx,
 		case BR_SSLKEYX_ECDHE_ECDSA:
 			if (pc->sk->key_type == BR_KEYTYPE_EC) {
 				choices->cipher_suite = st[u][0];
+				if (br_ssl_engine_get_version(&cc->eng)
+					< BR_TLS12)
+				{
+					hash_id = br_sha1_ID;
+				}
 				choices->hash_id = hash_id;
 				goto choose_ok;
 			}
@@ -503,7 +514,7 @@ sp_do_sign(const br_ssl_server_policy_class **pctx,
 		hc = get_hash_impl(hash_id);
 		if (hc == NULL) {
 			if (pc->verbose) {
-				fprintf(stderr, "ERROR: cannot RSA-sign with"
+				fprintf(stderr, "ERROR: cannot ECDSA-sign with"
 					" unknown hash function: %d\n",
 					hash_id);
 			}
@@ -789,6 +800,8 @@ do_server(int argc, char *argv[])
 			hfuns |= x;
 		} else if (eqstr(arg, "-serverpref")) {
 			flags |= BR_OPT_ENFORCE_SERVER_PREFERENCES;
+		} else if (eqstr(arg, "-noreneg")) {
+			flags |= BR_OPT_NO_RENEGOTIATION;
 		} else {
 			fprintf(stderr, "ERROR: unknown option: '%s'\n", arg);
 			usage_server();
@@ -898,7 +911,7 @@ do_server(int argc, char *argv[])
 	suite_ids = xmalloc(num_suites * sizeof *suite_ids);
 	br_ssl_server_zero(&cc);
 	br_ssl_engine_set_versions(&cc.eng, vmin, vmax);
-	br_ssl_server_set_all_flags(&cc, flags);
+	br_ssl_engine_set_all_flags(&cc.eng, flags);
 	if (vmin <= BR_TLS11) {
 		if (!(hfuns & (1 << br_md5_ID))) {
 			fprintf(stderr, "ERROR: TLS 1.0 and 1.1 need MD5\n");
@@ -1006,6 +1019,11 @@ do_server(int argc, char *argv[])
 	br_ssl_server_set_policy(&cc, &pc.vtable);
 
 	br_ssl_engine_set_buffer(&cc.eng, iobuf, iobuf_len, bidi);
+
+	/*
+	 * We need to ignore SIGPIPE.
+	 */
+	signal(SIGPIPE, SIG_IGN);
 
 	/*
 	 * Open the server socket.
