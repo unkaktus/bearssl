@@ -69,6 +69,11 @@
  *
  *      Multiply a curve point with an integer.
  *
+ *   - `mulgen()`
+ *
+ *      Multiply the curve generator with an integer. This may be faster
+ *      than the generic `mul()`.
+ *
  *   - `muladd()`
  *
  *      Multiply two curve points by two integers, and return the sum of
@@ -299,10 +304,9 @@ typedef struct {
 	 *     not the case, then this function returns an error (0).
 	 *
 	 *   - The multiplier integer MUST be non-zero and less than the
-	 *     curve subgroup order. If the integer is zero, then an
-	 *     error is reported, but if the integer is not lower than
-	 *     the subgroup order, then the result is indeterminate and an
-	 *     error code is not guaranteed.
+	 *     curve subgroup order. If this property does not hold, then
+	 *     the result is indeterminate and an error code is not
+	 *     guaranteed.
 	 *
 	 * Returned value is 1 on success, 0 on error. On error, the
 	 * contents of `G` are indeterminate.
@@ -315,6 +319,22 @@ typedef struct {
 	 * \return  1 on success, 0 on error.
 	 */
 	uint32_t (*mul)(unsigned char *G, size_t Glen,
+		const unsigned char *x, size_t xlen, int curve);
+
+	/**
+	 * \brief Multiply the generator by an integer.
+	 *
+	 * The multiplier MUST be non-zero and less than the curve
+	 * subgroup order. Results are indeterminate if this property
+	 * does not hold.
+	 *
+	 * \param R       output buffer for the point.
+	 * \param x       multiplier (unsigned big-endian).
+	 * \param xlen    multiplier length (in bytes).
+	 * \param curve   curve identifier.
+	 * \return  encoded result point length (in bytes).
+	 */
+	size_t (*mulgen)(unsigned char *R,
 		const unsigned char *x, size_t xlen, int curve);
 
 	/**
@@ -333,6 +353,11 @@ typedef struct {
 	 *     infinity" either). If this is not the case, then this
 	 *     function returns an error (0).
 	 *
+	 *   - If the `B` pointer is `NULL`, then the conventional
+	 *     subgroup generator is used. With some implementations,
+	 *     this may be faster than providing a pointer to the
+	 *     generator.
+	 *
 	 *   - The multiplier integers (`x` and `y`) MUST be non-zero
 	 *     and less than the curve subgroup order. If either integer
 	 *     is zero, then an error is reported, but if one of them is
@@ -346,7 +371,7 @@ typedef struct {
 	 * contents of `A` are indeterminate.
 	 *
 	 * \param A       first point to multiply.
-	 * \param B       second point to multiply.
+	 * \param B       second point to multiply (`NULL` for the generator).
 	 * \param len     common length of the encoded points (in bytes).
 	 * \param x       multiplier for `A` (unsigned big-endian).
 	 * \param xlen    length of multiplier for `A` (in bytes).
@@ -368,6 +393,25 @@ typedef struct {
  * secp384r1 and secp521r1 (aka NIST curves P-256, P-384 and P-521).
  */
 extern const br_ec_impl br_ec_prime_i31;
+
+/**
+ * \brief EC implementation "i15".
+ *
+ * This implementation internally uses generic code for modular integers,
+ * with a representation as sequences of 15-bit words. It supports secp256r1,
+ * secp384r1 and secp521r1 (aka NIST curves P-256, P-384 and P-521).
+ */
+extern const br_ec_impl br_ec_prime_i15;
+
+/**
+ * \brief EC implementation "i15" for P-256.
+ *
+ * This implementation uses specialised code for curve secp256r1 (also
+ * known as NIST P-256), with Karatsuba decomposition, and fast modular
+ * reduction thanks to the field modulus special format. Only 32-bit
+ * multiplications are used (with 32-bit results, not 64-bit).
+ */
+extern const br_ec_impl br_ec_p256_i15;
 
 /**
  * \brief Convert a signature from "raw" to "asn1".
@@ -520,6 +564,72 @@ uint32_t br_ecdsa_i31_vrfy_asn1(const br_ec_impl *impl,
  * \return  1 on success, 0 on error.
  */
 uint32_t br_ecdsa_i31_vrfy_raw(const br_ec_impl *impl,
+	const void *hash, size_t hash_len,
+	const br_ec_public_key *pk, const void *sig, size_t sig_len);
+
+/**
+ * \brief ECDSA signature generator, "i15" implementation, "asn1" format.
+ *
+ * \see br_ecdsa_sign()
+ *
+ * \param impl         EC implementation to use.
+ * \param hf           hash function used to process the data.
+ * \param hash_value   signed data (hashed).
+ * \param sk           EC private key.
+ * \param sig          destination buffer.
+ * \return  the signature length (in bytes), or 0 on error.
+ */
+size_t br_ecdsa_i15_sign_asn1(const br_ec_impl *impl,
+	const br_hash_class *hf, const void *hash_value,
+	const br_ec_private_key *sk, void *sig);
+
+/**
+ * \brief ECDSA signature generator, "i15" implementation, "raw" format.
+ *
+ * \see br_ecdsa_sign()
+ *
+ * \param impl         EC implementation to use.
+ * \param hf           hash function used to process the data.
+ * \param hash_value   signed data (hashed).
+ * \param sk           EC private key.
+ * \param sig          destination buffer.
+ * \return  the signature length (in bytes), or 0 on error.
+ */
+size_t br_ecdsa_i15_sign_raw(const br_ec_impl *impl,
+	const br_hash_class *hf, const void *hash_value,
+	const br_ec_private_key *sk, void *sig);
+
+/**
+ * \brief ECDSA signature verifier, "i15" implementation, "asn1" format.
+ *
+ * \see br_ecdsa_vrfy()
+ *
+ * \param impl       EC implementation to use.
+ * \param hash       signed data (hashed).
+ * \param hash_len   hash value length (in bytes).
+ * \param pk         EC public key.
+ * \param sig        signature.
+ * \param sig_len    signature length (in bytes).
+ * \return  1 on success, 0 on error.
+ */
+uint32_t br_ecdsa_i15_vrfy_asn1(const br_ec_impl *impl,
+	const void *hash, size_t hash_len,
+	const br_ec_public_key *pk, const void *sig, size_t sig_len);
+
+/**
+ * \brief ECDSA signature verifier, "i15" implementation, "raw" format.
+ *
+ * \see br_ecdsa_vrfy()
+ *
+ * \param impl       EC implementation to use.
+ * \param hash       signed data (hashed).
+ * \param hash_len   hash value length (in bytes).
+ * \param pk         EC public key.
+ * \param sig        signature.
+ * \param sig_len    signature length (in bytes).
+ * \return  1 on success, 0 on error.
+ */
+uint32_t br_ecdsa_i15_vrfy_raw(const br_ec_impl *impl,
 	const void *hash, size_t hash_len,
 	const br_ec_public_key *pk, const void *sig, size_t sig_len);
 

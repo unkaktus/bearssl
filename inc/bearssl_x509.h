@@ -95,12 +95,12 @@
  *     include some limited processing for case-insensitive matching and
  *     whitespace normalisation).
  *
- *   - When doing validation, a target public key type is provided. That
- *     type is the combination of a key algorithm (RSA or EC) and an
- *     intended key usage (key exchange or signature); in the context
- *     of a SSL/TLS client validating a server's certificate, the algorithm
- *     and usage are obtained from the cipher suite (e.g. ECDHE_RSA means
- *     that an RSA key for signatures is expected).
+ *   - Successful validation produces a public key type but also a set
+ *     of allowed usages (`BR_KEYTYPE_KEYX` and/or `BR_KEYTYPE_SIGN`).
+ *     The caller is responsible for checking that the key type and
+ *     usages are compatible with the expected values (e.g. with the
+ *     selected cipher suite, when the client validates the server's
+ *     certificate).
  *
  * **Important caveats:**
  *
@@ -234,13 +234,23 @@ typedef struct {
 } br_x509_pkey;
 
 /**
+ * \brief Distinguished Name (X.500) structure.
+ *
+ * The DN is DER-encoded.
+ */
+typedef struct {
+	/** \brief Encoded DN data. */
+	unsigned char *data;
+	/** \brief Encoded DN length (in bytes). */
+	size_t len;
+} br_x500_name;
+
+/**
  * \brief Trust anchor structure.
  */
 typedef struct {
 	/** \brief Encoded DN (X.500 name). */
-	unsigned char *dn;
-	/** \brief Encoded DN length (in bytes). */
-	size_t dn_len;
+	br_x500_name dn;
 	/** \brief Anchor flags (e.g. `BR_X509_TA_CA`). */
 	unsigned flags;
 	/** \brief Anchor public key. */
@@ -364,22 +374,16 @@ struct br_x509_class_ {
 	 * This method shall set the vtable (first field) of the context
 	 * structure.
 	 *
-	 * The `expected_key_type` is a combination of the algorithm type
-	 * (`BR_KEYTYPE_RSA` or `BR_KEYTYPE_EC`) and the key usage
-	 * (`BR_KEYTYPE_KEYX` or `BR_KEYTYPE_SIGN`).
-	 *
 	 * The `server_name`, if not `NULL`, will be considered as a
 	 * fully qualified domain name, to be matched against the `dNSName`
 	 * elements of the end-entity certificate's SAN extension (if there
 	 * is no SAN, then the Common Name from the subjectDN will be used).
 	 * If `server_name` is `NULL` then no such matching is performed.
 	 *
-	 * \param ctx                 validation context.
-	 * \param expected_key_type   expected key type (algorithm and usage).
-	 * \param server_name         server name to match (or `NULL`).
+	 * \param ctx           validation context.
+	 * \param server_name   server name to match (or `NULL`).
 	 */
 	void (*start_chain)(const br_x509_class **ctx,
-		unsigned expected_key_type,
 		const char *server_name);
 
 	/**
@@ -446,10 +450,17 @@ struct br_x509_class_ {
 	 * a decoded public key even if the chain did not end on a
 	 * trusted anchor.
 	 *
+	 * If validation succeeded and `usage` is not `NULL`, then
+	 * `*usage` is filled with a combination of `BR_KEYTYPE_SIGN`
+	 * and/or `BR_KEYTYPE_KEYX` that specifies the validated key
+	 * usage types. It is the caller's responsibility to check
+	 * that value against the intended use of the public key.
+	 *
 	 * \param ctx   validation context.
 	 * \return  the end-entity public key, or `NULL`.
 	 */
-	const br_x509_pkey *(*get_pkey)(const br_x509_class *const *ctx);
+	const br_x509_pkey *(*get_pkey)(
+		const br_x509_class *const *ctx, unsigned *usages);
 };
 
 /**
@@ -466,6 +477,7 @@ typedef struct {
 	const br_x509_class *vtable;
 #ifndef BR_DOXYGEN_IGNORE
 	br_x509_pkey pkey;
+	unsigned usages;
 #endif
 } br_x509_knownkey_context;
 
@@ -477,26 +489,34 @@ extern const br_x509_class br_x509_knownkey_vtable;
 /**
  * \brief Initialize a "known key" X.509 engine with a known RSA public key.
  *
+ * The `usages` parameter indicates the allowed key usages for that key
+ * (`BR_KEYTYPE_KEYX` and/or `BR_KEYTYPE_SIGN`).
+ *
  * The provided pointers are linked in, not copied, so they must remain
  * valid while the public key may be in usage.
  *
- * \param ctx   context to initialise.
- * \param pk    known public key.
+ * \param ctx      context to initialise.
+ * \param pk       known public key.
+ * \param usages   allowed key usages.
  */
 void br_x509_knownkey_init_rsa(br_x509_knownkey_context *ctx,
-	const br_rsa_public_key *pk);
+	const br_rsa_public_key *pk, unsigned usages);
 
 /**
  * \brief Initialize a "known key" X.509 engine with a known EC public key.
  *
+ * The `usages` parameter indicates the allowed key usages for that key
+ * (`BR_KEYTYPE_KEYX` and/or `BR_KEYTYPE_SIGN`).
+ *
  * The provided pointers are linked in, not copied, so they must remain
  * valid while the public key may be in usage.
  *
- * \param ctx   context to initialise.
- * \param pk    known public key.
+ * \param ctx      context to initialise.
+ * \param pk       known public key.
+ * \param usages   allowed key usages.
  */
 void br_x509_knownkey_init_ec(br_x509_knownkey_context *ctx,
-	const br_ec_public_key *pk);
+	const br_ec_public_key *pk, unsigned usages);
 
 #ifndef BR_DOXYGEN_IGNORE
 /*
@@ -532,6 +552,76 @@ void br_x509_knownkey_init_ec(br_x509_knownkey_context *ctx,
 #endif
 
 /**
+ * \brief Type for receiving a name element.
+ *
+ * An array of such structures can be provided to the X.509 decoding
+ * engines. If the specified elements are found in the certificate
+ * subject DN or the SAN extension, then the name contents are copied
+ * as zero-terminated strings into the buffer.
+ *
+ * The decoder converts TeletexString and BMPString to UTF8String, and
+ * ensures that the resulting string is zero-terminated. If the string
+ * does not fit in the provided buffer, then the copy is aborted and an
+ * error is reported.
+ */
+typedef struct {
+	/**
+	 * \brief Element OID.
+	 *
+	 * For X.500 name elements (to be extracted from the subject DN),
+	 * this is the encoded OID for the requested name element; the
+	 * first byte shall contain the length of the DER-encoded OID
+	 * value, followed by the OID value (for instance, OID 2.5.4.3,
+	 * for id-at-commonName, will be `03 55 04 03`). This is
+	 * equivalent to full DER encoding with the length but without
+	 * the tag.
+	 *
+	 * For SAN name elements, the first byte (`oid[0]`) has value 0,
+	 * followed by another byte that matches the expected GeneralName
+	 * tag. Allowed second byte values are then:
+	 *
+	 *   - 1: `rfc822Name`
+	 *
+	 *   - 2: `dNSName`
+	 *
+	 *   - 6: `uniformResourceIdentifier`
+	 *
+	 *   - 0: `otherName`
+	 *
+	 * If first and second byte are 0, then this is a SAN element of
+	 * type `otherName`; the `oid[]` array should then contain, right
+	 * after the two bytes of value 0, an encoded OID (with the same
+	 * conventions as for X.500 name elements). If a match is found
+	 * for that OID, then the corresponding name element will be
+	 * extracted, as long as it is a supported string type.
+	 */
+	const unsigned char *oid;
+
+	/**
+	 * \brief Destination buffer.
+	 */
+	char *buf;
+
+	/**
+	 * \brief Length (in bytes) of the destination buffer.
+	 *
+	 * The buffer MUST NOT be smaller than 1 byte.
+	 */
+	size_t len;
+
+	/**
+	 * \brief Decoding status.
+	 *
+	 * Status is 0 if the name element was not found, 1 if it was
+	 * found and decoded, or -1 on error. Error conditions include
+	 * an unrecognised encoding, an invalid encoding, or a string
+	 * too large for the destination buffer.
+	 */
+	int status;
+
+} br_name_element;
+
+/**
  * \brief The "minimal" X.509 engine structure.
  *
  * The structure contents are opaque (they shall not be accessed directly),
@@ -560,8 +650,8 @@ typedef struct {
 	/* Server name to match with the SAN / CN of the EE certificate. */
 	const char *server_name;
 
-	/* Expected EE key type and usage. */
-	unsigned char expected_key_type;
+	/* Validated key usages. */
+	unsigned char key_usages;
 
 	/* Explicitly set date and time. */
 	uint32_t days, seconds;
@@ -622,6 +712,12 @@ typedef struct {
 	unsigned char current_dn_hash[64];
 	unsigned char next_dn_hash[64];
 	unsigned char saved_dn_hash[64];
+
+	/*
+	 * Name elements to gather.
+	 */
+	br_name_element *name_elts;
+	size_t num_name_elts;
 
 	/*
 	 * Public key cryptography implementations (signature verification).
@@ -727,6 +823,20 @@ br_x509_minimal_set_ecdsa(br_x509_minimal_context *ctx,
 }
 
 /**
+ * \brief Initialise a "minimal" X.509 engine with default algorithms.
+ *
+ * This function performs the same job as `br_x509_minimal_init()`, but
+ * also sets implementations for RSA, ECDSA, and the standard hash
+ * functions.
+ *
+ * \param ctx                 context to initialise.
+ * \param trust_anchors       trust anchors.
+ * \param trust_anchors_num   number of trust anchors.
+ */
+void br_x509_minimal_init_full(br_x509_minimal_context *ctx,
+	const br_x509_trust_anchor *trust_anchors, size_t trust_anchors_num);
+
+/**
  * \brief Set the validation time for the X.509 "minimal" engine.
  *
  * The validation time is set as two 32-bit integers, for days and
@@ -776,6 +886,26 @@ static inline void
 br_x509_minimal_set_minrsa(br_x509_minimal_context *ctx, int byte_length)
 {
 	ctx->min_rsa_size = (int16_t)(byte_length - 128);
+}
+
+/**
+ * \brief Set the name elements to gather.
+ *
+ * The provided array is linked in the context. The elements are
+ * gathered from the EE certificate. If the same element type is
+ * requested several times, then the relevant structures will be filled
+ * in the order the matching values are encountered in the certificate.
+ *
+ * \param ctx        validation context.
+ * \param elts       array of name element structures to fill.
+ * \param num_elts   number of name element structures to fill.
+ */
+static inline void
+br_x509_minimal_set_name_elements(br_x509_minimal_context *ctx,
+	br_name_element *elts, size_t num_elts)
+{
+	ctx->name_elts = elts;
+	ctx->num_name_elts = num_elts;
 }
 
 /**

@@ -51,6 +51,15 @@
  */
 
 /*
+ * When BR_SLOW_MUL15 is enabled, short multplications (on 15-bit words)
+ * are assumed to be substantially slow with regards to other integer
+ * operations, thus making it worth to make more integer operations if
+ * it allows using less multiplications.
+ *
+#define BR_SLOW_MUL15   1
+ */
+
+/*
  * When BR_CT_MUL31 is enabled, multiplications of 31-bit values (used
  * in the "i31" big integer implementation) use an alternate implementation
  * which is slower and larger than the normal multiplication, but should
@@ -58,6 +67,25 @@
  * multiplication opcode takes a variable number of cycles to complete.
  *
 #define BR_CT_MUL31   1
+ */
+
+/*
+ * When BR_CT_MUL15 is enabled, multiplications of 15-bit values (held
+ * in 32-bit words) use an alternate implementation which is slower and
+ * larger than the normal multiplication, but should ensure
+ * constant-time multiplications on most/all architectures where the
+ * basic multiplication is not constant-time.
+#define BR_CT_MUL15   1
+ */
+
+/*
+ * When BR_NO_ARITH_SHIFT is enabled, arithmetic right shifts (with sign
+ * extension) are performed with a sequence of operations which is bigger
+ * and slower than a simple right shift on a signed value. This avoids
+ * relying on an implementation-defined behaviour. However, most if not
+ * all C compilers use sign extension for right shifts on signed values,
+ * so this alternate macro is disabled by default.
+#define BR_NO_ARITH_SHIFT   1
  */
 
 /*

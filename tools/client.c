@@ -119,6 +119,314 @@ host_connect(const char *host, const char *port, int verbose)
 	return fd;
 }
 
+typedef struct {
+	const br_ssl_client_certificate_class *vtable;
+	int verbose;
+	br_x509_certificate *chain;
+	size_t chain_len;
+	private_key *sk;
+	int issuer_key_type;
+} ccert_context;
+
+static void
+cc_start_name_list(const br_ssl_client_certificate_class **pctx)
+{
+	ccert_context *zc;
+
+	zc = (ccert_context *)pctx;
+	if (zc->verbose) {
+		fprintf(stderr, "Server requests a client certificate.\n");
+		fprintf(stderr, "--- anchor DN list start ---\n");
+	}
+}
+
+static void
+cc_start_name(const br_ssl_client_certificate_class **pctx, size_t len)
+{
+	ccert_context *zc;
+
+	zc = (ccert_context *)pctx;
+	if (zc->verbose) {
+		fprintf(stderr, "new anchor name, length = %u\n",
+			(unsigned)len);
+	}
+}
+
+static void
+cc_append_name(const br_ssl_client_certificate_class **pctx,
+	const unsigned char *data, size_t len)
+{
+	ccert_context *zc;
+
+	zc = (ccert_context *)pctx;
+	if (zc->verbose) {
+		size_t u;
+
+		for (u = 0; u < len; u ++) {
+			if (u == 0) {
+				fprintf(stderr, "  ");
+			} else if (u > 0 && u % 16 == 0) {
+				fprintf(stderr, "\n  ");
+			}
+			fprintf(stderr, " %02x", data[u]);
+		}
+		if (len > 0) {
+			fprintf(stderr, "\n");
+		}
+	}
+}
+
+static void
+cc_end_name(const br_ssl_client_certificate_class **pctx)
+{
+	(void)pctx;
+}
+
+static void
+cc_end_name_list(const br_ssl_client_certificate_class **pctx)
+{
+	ccert_context *zc;
+
+	zc = (ccert_context *)pctx;
+	if (zc->verbose) {
+		fprintf(stderr, "--- anchor DN list end ---\n");
+	}
+}
+
+static void
+print_hashes(unsigned hh, unsigned hh2)
+{
+	int i;
+
+	for (i = 0; i < 8; i ++) {
+		const char *name;
+
+		name = hash_function_name(i);
+		if (((hh >> i) & 1) != 0) {
+			fprintf(stderr, " %s", name);
+		} else if (((hh2 >> i) & 1) != 0) {
+			fprintf(stderr, " (%s)", name);
+		}
+	}
+}
+
+static int
+choose_hash(unsigned hh)
+{
+	static const int f[] = {
+		br_sha256_ID, br_sha224_ID, br_sha384_ID, br_sha512_ID,
+		br_sha1_ID, br_md5sha1_ID, -1
+	};
+
+	size_t u;
+
+	for (u = 0; f[u] >= 0; u ++) {
+		if (((hh >> f[u]) & 1) != 0) {
+			return f[u];
+		}
+	}
+	return -1;
+}
+
+static void
+cc_choose(const br_ssl_client_certificate_class **pctx,
+	const br_ssl_client_context *cc, uint32_t auth_types,
+	br_ssl_client_certificate *choices)
+{
+	ccert_context *zc;
+	int scurve;
+
+	zc = (ccert_context *)pctx;
+	scurve = br_ssl_client_get_server_curve(cc);
+	if (zc->verbose) {
+		unsigned hashes;
+
+		hashes = br_ssl_client_get_server_hashes(cc);
+		if ((auth_types & 0x00FF) != 0) {
+			fprintf(stderr, "supported: RSA signatures:");
+			print_hashes(auth_types, hashes);
+			fprintf(stderr, "\n");
+		}
+		if ((auth_types & 0xFF00) != 0) {
+			fprintf(stderr, "supported: ECDSA signatures:");
+			print_hashes(auth_types >> 8, hashes >> 8);
+			fprintf(stderr, "\n");
+		}
+		if ((auth_types & 0x010000) != 0) {
+			fprintf(stderr, "supported:"
+				" fixed ECDH (cert signed with RSA)\n");
+		}
+		if ((auth_types & 0x020000) != 0) {
+			fprintf(stderr, "supported:"
+				" fixed ECDH (cert signed with ECDSA)\n");
+		}
+		if (scurve) {
+			fprintf(stderr, "server key curve: %s (%d)\n",
+				ec_curve_name(scurve), scurve);
+		} else {
+			fprintf(stderr, "server key is not EC\n");
+		}
+	}
+	switch (zc->sk->key_type) {
+	case BR_KEYTYPE_RSA:
+		if ((choices->hash_id = choose_hash(auth_types)) >= 0) {
+			if (zc->verbose) {
+				fprintf(stderr, "using RSA, hash = %d (%s)\n",
+					choices->hash_id,
+					hash_function_name(choices->hash_id));
+			}
+			choices->auth_type = BR_AUTH_RSA;
+			choices->chain = zc->chain;
+			choices->chain_len = zc->chain_len;
+			return;
+		}
+		break;
+	case BR_KEYTYPE_EC:
+		if (zc->issuer_key_type != 0
+			&& scurve == zc->sk->key.ec.curve)
+		{
+			int x;
+
+			x = (zc->issuer_key_type == BR_KEYTYPE_RSA) ? 16 : 17;
+			if (((auth_types >> x) & 1) != 0) {
+				if (zc->verbose) {
+					fprintf(stderr, "using static ECDH\n");
+				}
+				choices->auth_type = BR_AUTH_ECDH;
+				choices->hash_id = -1;
+				choices->chain = zc->chain;
+				choices->chain_len = zc->chain_len;
+				return;
+			}
+		}
+		if ((choices->hash_id = choose_hash(auth_types >> 8)) >= 0) {
+			if (zc->verbose) {
+				fprintf(stderr, "using ECDSA, hash = %d (%s)\n",
+					choices->hash_id,
+					hash_function_name(choices->hash_id));
+			}
+			choices->auth_type = BR_AUTH_ECDSA;
+			choices->chain = zc->chain;
+			choices->chain_len = zc->chain_len;
+			return;
+		}
+		break;
+	}
+	if (zc->verbose) {
+		fprintf(stderr, "no matching client certificate\n");
+	}
+	choices->chain = NULL;
+	choices->chain_len = 0;
+}
+
+static uint32_t
+cc_do_keyx(const br_ssl_client_certificate_class **pctx,
+	unsigned char *data, size_t len)
+{
+	ccert_context *zc;
+
+	zc = (ccert_context *)pctx;
+	return br_ec_prime_i31.mul(data, len, zc->sk->key.ec.x,
+		zc->sk->key.ec.xlen, zc->sk->key.ec.curve);
+}
+
+static size_t
+cc_do_sign(const br_ssl_client_certificate_class **pctx,
+	int hash_id, size_t hv_len, unsigned char *data, size_t len)
+{
+	ccert_context *zc;
+	unsigned char hv[64];
+
+	zc = (ccert_context *)pctx;
+	memcpy(hv, data, hv_len);
+	switch (zc->sk->key_type) {
+		const br_hash_class *hc;
+		const unsigned char *hash_oid;
+		uint32_t x;
+		size_t sig_len;
+
+	case BR_KEYTYPE_RSA:
+		hash_oid = get_hash_oid(hash_id);
+		if (hash_oid == NULL && hash_id != 0) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: cannot RSA-sign with"
+					" unknown hash function: %d\n",
+					hash_id);
+			}
+			return 0;
+		}
+		sig_len = (zc->sk->key.rsa.n_bitlen + 7) >> 3;
+		if (len < sig_len) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: cannot RSA-sign,"
+					" buffer is too small"
+					" (sig=%lu, buf=%lu)\n",
+					(unsigned long)sig_len,
+					(unsigned long)len);
+			}
+			return 0;
+		}
+		x = br_rsa_i31_pkcs1_sign(hash_oid, hv, hv_len,
+			&zc->sk->key.rsa, data);
+		if (!x) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: RSA-sign failure\n");
+			}
+			return 0;
+		}
+		return sig_len;
+
+	case BR_KEYTYPE_EC:
+		hc = get_hash_impl(hash_id);
+		if (hc == NULL) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: cannot ECDSA-sign with"
+					" unknown hash function: %d\n",
+					hash_id);
+			}
+			return 0;
+		}
+		if (len < 139) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: cannot ECDSA-sign"
+					" (output buffer = %lu)\n",
+					(unsigned long)len);
+			}
+			return 0;
+		}
+		sig_len = br_ecdsa_i31_sign_asn1(&br_ec_prime_i31,
+			hc, hv, &zc->sk->key.ec, data);
+		if (sig_len == 0) {
+			if (zc->verbose) {
+				fprintf(stderr, "ERROR: ECDSA-sign failure\n");
+			}
+			return 0;
+		}
+		return sig_len;
+
+	default:
+		return 0;
+	}
+}
+
+static const br_ssl_client_certificate_class ccert_vtable = {
+	sizeof(ccert_context),
+	cc_start_name_list,
+	cc_start_name,
+	cc_append_name,
+	cc_end_name,
+	cc_end_name_list,
+	cc_choose,
+	cc_do_keyx,
+	cc_do_sign
+};
+
+static void
+free_alpn(void *alpn)
+{
+	xfree(*(char **)alpn);
+}
+
 static void
 usage_client(void)
 {
@@ -141,6 +449,12 @@ usage_client(void)
 	fprintf(stderr,
 "   -CA file        add certificates in 'file' to trust anchors\n");
 	fprintf(stderr,
+"   -cert file      set client certificate chain\n");
+	fprintf(stderr,
+"   -key file       set client private key (for certificate authentication)\n");
+	fprintf(stderr,
+"   -nostaticecdh   prohibit full-static ECDH (client certificate)\n");
+	fprintf(stderr,
 "   -list           list supported names (protocols, algorithms...)\n");
 	fprintf(stderr,
 "   -vmin name      set minimum supported version (default: TLS-1.0)\n");
@@ -156,6 +470,10 @@ usage_client(void)
 "   -fallback       send the TLS_FALLBACK_SCSV (i.e. claim a downgrade)\n");
 	fprintf(stderr,
 "   -noreneg        prohibit renegotiations\n");
+	fprintf(stderr,
+"   -alpn name      add protocol name to list of protocols (ALPN extension)\n");
+	fprintf(stderr,
+"   -strictalpn     fail on ALPN mismatch\n");
 }
 
 /* see brssl.h */
@@ -172,6 +490,7 @@ do_client(int argc, char *argv[])
 	const char *sni;
 	anchor_list anchors = VEC_INIT;
 	unsigned vmin, vmax;
+	VECTOR(const char *) alpn_names = VEC_INIT;
 	cipher_suite *suites;
 	size_t num_suites;
 	uint16_t *suite_ids;
@@ -181,6 +500,11 @@ do_client(int argc, char *argv[])
 	br_x509_minimal_context xc;
 	x509_noanchor_context xwc;
 	const br_hash_class *dnhash;
+	ccert_context zc;
+	br_x509_certificate *chain;
+	size_t chain_len;
+	private_key *sk;
+	int nostaticecdh;
 	unsigned char *iobuf;
 	size_t iobuf_len;
 	size_t minhello_len;
@@ -202,6 +526,10 @@ do_client(int argc, char *argv[])
 	num_suites = 0;
 	hfuns = 0;
 	suite_ids = NULL;
+	chain = NULL;
+	chain_len = 0;
+	sk = NULL;
+	nostaticecdh = 0;
 	iobuf = NULL;
 	iobuf_len = 0;
 	minhello_len = (size_t)-1;
@@ -281,6 +609,44 @@ do_client(int argc, char *argv[])
 				usage_client();
 				goto client_exit_error;
 			}
+		} else if (eqstr(arg, "-cert")) {
+			if (++ i >= argc) {
+				fprintf(stderr,
+					"ERROR: no argument for '-cert'\n");
+				usage_client();
+				goto client_exit_error;
+			}
+			if (chain != NULL) {
+				fprintf(stderr,
+					"ERROR: duplicate certificate chain\n");
+				usage_client();
+				goto client_exit_error;
+			}
+			arg = argv[i];
+			chain = read_certificates(arg, &chain_len);
+			if (chain == NULL || chain_len == 0) {
+				goto client_exit_error;
+			}
+		} else if (eqstr(arg, "-key")) {
+			if (++ i >= argc) {
+				fprintf(stderr,
+					"ERROR: no argument for '-key'\n");
+				usage_client();
+				goto client_exit_error;
+			}
+			if (sk != NULL) {
+				fprintf(stderr,
+					"ERROR: duplicate private key\n");
+				usage_client();
+				goto client_exit_error;
+			}
+			arg = argv[i];
+			sk = read_private_key(arg);
+			if (sk == NULL) {
+				goto client_exit_error;
+			}
+		} else if (eqstr(arg, "-nostaticecdh")) {
+			nostaticecdh = 1;
 		} else if (eqstr(arg, "-list")) {
 			list_names();
 			goto client_exit;
@@ -391,6 +757,16 @@ do_client(int argc, char *argv[])
 			fallback = 1;
 		} else if (eqstr(arg, "-noreneg")) {
 			flags |= BR_OPT_NO_RENEGOTIATION;
+		} else if (eqstr(arg, "-alpn")) {
+			if (++ i >= argc) {
+				fprintf(stderr,
+					"ERROR: no argument for '-alpn'\n");
+				usage_client();
+				goto client_exit_error;
+			}
+			VEC_ADD(alpn_names, xstrdup(argv[i]));
+		} else if (eqstr(arg, "-strictalpn")) {
+			flags |= BR_OPT_FAIL_ON_ALPN_MISMATCH;
 		} else {
 			fprintf(stderr, "ERROR: unknown option: '%s'\n", arg);
 			usage_client();
@@ -414,7 +790,7 @@ do_client(int argc, char *argv[])
 	}
 	if (u == 0) {
 		host = xstrdup(server_name);
-		port = "443";
+		port = xstrdup("443");
 	} else {
 		port = xstrdup(server_name + u);
 		host = xmalloc(u);
@@ -423,6 +799,19 @@ do_client(int argc, char *argv[])
 	}
 	if (sni == NULL) {
 		sni = host;
+	}
+
+	if (chain == NULL && sk != NULL) {
+		fprintf(stderr, "ERROR: private key specified, but"
+			" no certificate chain\n");
+		usage_client();
+		goto client_exit_error;
+	}
+	if (chain != NULL && sk == NULL) {
+		fprintf(stderr, "ERROR: certificate chain specified, but"
+			" no private key\n");
+		usage_client();
+		goto client_exit_error;
 	}
 
 	if (vmin == 0) {
@@ -549,6 +938,15 @@ do_client(int argc, char *argv[])
 				&br_sslrec_in_gcm_vtable,
 				&br_sslrec_out_gcm_vtable);
 		}
+		if ((req & REQ_CHAPOL) != 0) {
+			br_ssl_engine_set_chacha20(&cc.eng,
+				&br_chacha20_ct_run);
+			br_ssl_engine_set_poly1305(&cc.eng,
+				&br_poly1305_ctmul_run);
+			br_ssl_engine_set_chapol(&cc.eng,
+				&br_sslrec_in_chapol_vtable,
+				&br_sslrec_out_chapol_vtable);
+		}
 		if ((req & REQ_3DESCBC) != 0) {
 			br_ssl_engine_set_des_cbc(&cc.eng,
 				&br_des_ct_cbcenc_vtable,
@@ -562,11 +960,13 @@ do_client(int argc, char *argv[])
 		}
 		if ((req & REQ_ECDHE_RSA) != 0) {
 			br_ssl_engine_set_ec(&cc.eng, &br_ec_prime_i31);
-			br_ssl_client_set_rsavrfy(&cc, &br_rsa_i31_pkcs1_vrfy);
+			br_ssl_engine_set_rsavrfy(&cc.eng,
+				&br_rsa_i31_pkcs1_vrfy);
 		}
 		if ((req & REQ_ECDHE_ECDSA) != 0) {
 			br_ssl_engine_set_ec(&cc.eng, &br_ec_prime_i31);
-			br_ssl_client_set_ecdsa(&cc, &br_ecdsa_i31_vrfy_asn1);
+			br_ssl_engine_set_ecdsa(&cc.eng,
+				&br_ecdsa_i31_vrfy_asn1);
 		}
 		if ((req & REQ_ECDH) != 0) {
 			br_ssl_engine_set_ec(&cc.eng, &br_ec_prime_i31);
@@ -625,6 +1025,27 @@ do_client(int argc, char *argv[])
 		br_ssl_client_set_min_clienthello_len(&cc, minhello_len);
 	}
 	br_ssl_engine_set_all_flags(&cc.eng, flags);
+	if (VEC_LEN(alpn_names) != 0) {
+		br_ssl_engine_set_protocol_names(&cc.eng,
+			&VEC_ELT(alpn_names, 0), VEC_LEN(alpn_names));
+	}
+
+	if (chain != NULL) {
+		zc.vtable = &ccert_vtable;
+		zc.verbose = verbose;
+		zc.chain = chain;
+		zc.chain_len = chain_len;
+		zc.sk = sk;
+		if (nostaticecdh || sk->key_type != BR_KEYTYPE_EC) {
+			zc.issuer_key_type = 0;
+		} else {
+			zc.issuer_key_type = get_cert_signer_algo(&chain[0]);
+			if (zc.issuer_key_type == 0) {
+				goto client_exit_error;
+			}
+		}
+		br_ssl_client_set_client_certificate(&cc, &zc.vtable);
+	}
 
 	br_ssl_engine_set_buffer(&cc.eng, iobuf, iobuf_len, bidi);
 	br_ssl_client_reset(&cc, sni, 0);
@@ -659,9 +1080,13 @@ do_client(int argc, char *argv[])
 	 */
 client_exit:
 	xfree(host);
+	xfree(port);
 	xfree(suites);
 	xfree(suite_ids);
 	VEC_CLEAREXT(anchors, &free_ta_contents);
+	VEC_CLEAREXT(alpn_names, &free_alpn);
+	free_certificates(chain, chain_len);
+	free_private_key(sk);
 	xfree(iobuf);
 	if (fd >= 0) {
 		close(fd);

@@ -532,11 +532,30 @@ MAX(uint32_t x, uint32_t y)
  * (old) platforms where the default MUL31 is not. Unfortunately, it is
  * also substantially slower, and yields larger code, on more modern
  * platforms, which is why it is deactivated by default.
+ *
+ * MUL31_lo() must do some extra work because on some platforms, the
+ * _signed_ multiplication may return early if the top bits are 1.
+ * Simply truncating (casting) the output of MUL31() would not be
+ * sufficient, because the compiler may notice that we keep only the low
+ * word, and then replace automatically the unsigned multiplication with
+ * a signed multiplication opcode.
  */
 #define MUL31(x, y)   ((uint64_t)((x) | (uint32_t)0x80000000) \
                        * (uint64_t)((y) | (uint32_t)0x80000000) \
                        - ((uint64_t)(x) << 31) - ((uint64_t)(y) << 31) \
                        - ((uint64_t)1 << 62))
+static inline uint32_t
+MUL31_lo(uint32_t x, uint32_t y)
+{
+	uint32_t xl, xh;
+	uint32_t yl, yh;
+
+	xl = (x & 0xFFFF) | (uint32_t)0x80000000;
+	xh = (x >> 16) | (uint32_t)0x80000000;
+	yl = (y & 0xFFFF) | (uint32_t)0x80000000;
+	yh = (y >> 16) | (uint32_t)0x80000000;
+	return (xl * yl + ((xl * yh + xh * yl) << 16)) & (uint32_t)0x7FFFFFFF;
+}
 
 #else
 
@@ -544,9 +563,49 @@ MAX(uint32_t x, uint32_t y)
  * Multiply two 31-bit integers, with a 62-bit result. This default
  * implementation assumes that the basic multiplication operator
  * yields constant-time code.
+ * The MUL31_lo() macro returns only the low 31 bits of the product.
  */
-#define MUL31(x, y)   ((uint64_t)(x) * (uint64_t)(y))
+#define MUL31(x, y)     ((uint64_t)(x) * (uint64_t)(y))
+#define MUL31_lo(x, y)  (((uint32_t)(x) * (uint32_t)(y)) & (uint32_t)0x7FFFFFFF)
 
+#endif
+
+/*
+ * Multiply two words together; the sum of the lengths of the two
+ * operands must not exceed 31 (for instance, one operand may use 16
+ * bits if the other fits on 15). If BR_CT_MUL15 is non-zero, then the
+ * macro will contain some extra operations that help in making the
+ * operation constant-time on some platforms, where the basic 32-bit
+ * multiplication is not constant-time.
+ */
+#if BR_CT_MUL15
+#define MUL15(x, y)   (((uint32_t)(x) | (uint32_t)0x80000000) \
+                       * ((uint32_t)(y) | (uint32_t)0x80000000) \
+		       & (uint32_t)0x7FFFFFFF)
+#else
+#define MUL15(x, y)   ((uint32_t)(x) * (uint32_t)(y))
+#endif
+
+/*
+ * Arithmetic right shift (sign bit is copied). What happens when
+ * right-shifting a negative value is _implementation-defined_, so it
+ * does not trigger undefined behaviour, but it is still up to each
+ * compiler to define (and document) what it does. Most/all compilers
+ * will do an arithmetic shift, the sign bit being used to fill the
+ * holes; this is a native operation on the underlying CPU, and it would
+ * make little sense for the compiler to do otherwise. GCC explicitly
+ * documents that it follows that convention.
+ *
+ * Still, if BR_NO_ARITH_SHIFT is defined (and non-zero), then an
+ * alternate version will be used, that does not rely on such
+ * implementation-defined behaviour. Unfortunately, it is also slower
+ * and yields bigger code, which is why it is deactivated by default.
+ */
+#if BR_NO_ARITH_SHIFT
+#define ARSH(x, n)   (((uint32_t)(x) >> (n)) \
+                      | ((-((uint32_t)(x) >> 31)) << (32 - (n))))
+#else
+#define ARSH(x, n)   ((*(int32_t *)&(x)) >> (n))
 #endif
 
 /*
@@ -1009,6 +1068,53 @@ void br_i31_mulacc(uint32_t *d, const uint32_t *a, const uint32_t *b);
 
 /* ==================================================================== */
 
+static inline void
+br_i15_zero(uint16_t *x, uint16_t bit_len)
+{
+	*x ++ = bit_len;
+	memset(x, 0, ((bit_len + 15) >> 4) * sizeof *x);
+}
+
+uint32_t br_i15_iszero(const uint16_t *x);
+
+uint16_t br_i15_ninv15(uint16_t x);
+
+uint32_t br_i15_add(uint16_t *a, const uint16_t *b, uint32_t ctl);
+
+uint32_t br_i15_sub(uint16_t *a, const uint16_t *b, uint32_t ctl);
+
+void br_i15_muladd_small(uint16_t *x, uint16_t z, const uint16_t *m);
+
+void br_i15_montymul(uint16_t *d, const uint16_t *x, const uint16_t *y,
+	const uint16_t *m, uint16_t m0i);
+
+void br_i15_to_monty(uint16_t *x, const uint16_t *m);
+
+void br_i15_modpow(uint16_t *x, const unsigned char *e, size_t elen,
+	const uint16_t *m, uint16_t m0i, uint16_t *t1, uint16_t *t2);
+
+void br_i15_encode(void *dst, size_t len, const uint16_t *x);
+
+uint32_t br_i15_decode_mod(uint16_t *x,
+	const void *src, size_t len, const uint16_t *m);
+
+void br_i15_rshift(uint16_t *x, int count);
+
+uint32_t br_i15_bit_length(uint16_t *x, size_t xlen);
+
+void br_i15_decode(uint16_t *x, const void *src, size_t len);
+
+void br_i15_from_monty(uint16_t *x, const uint16_t *m, uint16_t m0i);
+
+void br_i15_decode_reduce(uint16_t *x,
+	const void *src, size_t len, const uint16_t *m);
+
+void br_i15_reduce(uint16_t *x, const uint16_t *a, const uint16_t *m);
+
+void br_i15_mulacc(uint16_t *d, const uint16_t *a, const uint16_t *b);
+
+/* ==================================================================== */
+
 static inline size_t
 br_digest_size(const br_hash_class *digest_class)
 {
@@ -1308,6 +1414,29 @@ void br_aes_ct64_skey_expand(uint64_t *skey,
 
 /* ==================================================================== */
 /*
+ * RSA.
+ */
+
+/*
+ * Apply proper PKCS#1 v1.5 padding (for signatures). 'hash_oid' is
+ * the encoded hash function OID, or NULL.
+ */
+uint32_t br_rsa_pkcs1_sig_pad(const unsigned char *hash_oid,
+	const unsigned char *hash, size_t hash_len,
+	uint32_t n_bitlen, unsigned char *x);
+
+/*
+ * Check PKCS#1 v1.5 padding (for signatures). 'hash_oid' is the encoded
+ * hash function OID, or NULL. The provided 'sig' value is _after_ the
+ * modular exponentiation, i.e. it should be the padded hash. On
+ * success, the hashed message is extracted.
+ */
+uint32_t br_rsa_pkcs1_sig_unpad(const unsigned char *sig, size_t sig_len,
+	const unsigned char *hash_oid, size_t hash_len,
+	unsigned char *hash_out);
+
+/* ==================================================================== */
+/*
  * Elliptic curves.
  */
 
@@ -1327,6 +1456,8 @@ extern const br_ec_curve_def br_secp256r1;
 extern const br_ec_curve_def br_secp384r1;
 extern const br_ec_curve_def br_secp521r1;
 
+#if 0
+/* obsolete */
 /*
  * Type for the parameters for a "prime curve":
  *   coordinates are in GF(p), with p prime
@@ -1346,6 +1477,7 @@ extern const br_ec_prime_i31_curve br_ec_prime_i31_secp384r1;
 extern const br_ec_prime_i31_curve br_ec_prime_i31_secp521r1;
 
 #define BR_EC_I31_LEN   ((BR_MAX_EC_SIZE + 61) / 31)
+#endif
 
 /*
  * Decode some bytes as an i31 integer, with truncation (corresponding
@@ -1355,6 +1487,16 @@ extern const br_ec_prime_i31_curve br_ec_prime_i31_secp521r1;
  * of exactly that many bits in the source (capped at the source length).
  */
 void br_ecdsa_i31_bits2int(uint32_t *x,
+	const void *src, size_t len, uint32_t ebitlen);
+
+/*
+ * Decode some bytes as an i15 integer, with truncation (corresponding
+ * to the 'bits2int' operation in RFC 6979). The target ENCODED bit
+ * length is provided as last parameter. The resulting value will have
+ * this declared bit length, and consists the big-endian unsigned decoding
+ * of exactly that many bits in the source (capped at the source length).
+ */
+void br_ecdsa_i15_bits2int(uint16_t *x,
 	const void *src, size_t len, uint32_t ebitlen);
 
 /* ==================================================================== */
@@ -1523,6 +1665,24 @@ void br_ssl_engine_switch_gcm_in(br_ssl_engine_context *cc,
 void br_ssl_engine_switch_gcm_out(br_ssl_engine_context *cc,
 	int is_client, int prf_id,
 	const br_block_ctr_class *bc_impl, size_t cipher_key_len);
+
+/*
+ * Switch to ChaCha20+Poly1305 decryption for incoming records.
+ *    cc               the engine context
+ *    is_client        non-zero for a client, zero for a server
+ *    prf_id           id of hash function for PRF
+ */
+void br_ssl_engine_switch_chapol_in(br_ssl_engine_context *cc,
+	int is_client, int prf_id);
+
+/*
+ * Switch to ChaCha20+Poly1305 encryption for outgoing records.
+ *    cc               the engine context
+ *    is_client        non-zero for a client, zero for a server
+ *    prf_id           id of hash function for PRF
+ */
+void br_ssl_engine_switch_chapol_out(br_ssl_engine_context *cc,
+	int is_client, int prf_id);
 
 /*
  * Calls to T0-generated code.

@@ -47,6 +47,18 @@ const hash_function hash_functions[] = {
 /* see brssl.h */
 const cipher_suite cipher_suites[] = {
 	{
+		"ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		REQ_ECDHE_ECDSA | REQ_CHAPOL | REQ_SHA256 | REQ_TLS12,
+		"ECDHE with ECDSA, ChaCha20+Poly1305 encryption (TLS 1.2+)"
+	},
+	{
+		"ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+		BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		REQ_ECDHE_RSA | REQ_CHAPOL | REQ_SHA256 | REQ_TLS12,
+		"ECDHE with RSA, ChaCha20+Poly1305 encryption (TLS 1.2+)"
+	},
+	{
 		"ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 		BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		REQ_ECDHE_ECDSA | REQ_AESGCM | REQ_SHA256 | REQ_TLS12,
@@ -647,6 +659,23 @@ ec_curve_name(int curve)
 	case BR_EC_brainpoolP256r1:  return "brainpoolP256r1";
 	case BR_EC_brainpoolP384r1:  return "brainpoolP384r1";
 	case BR_EC_brainpoolP512r1:  return "brainpoolP512r1";
+	default:
+		return "unknown";
+	}
+}
+
+/* see brssl.h */
+const char *
+hash_function_name(int id)
+{
+	switch (id) {
+	case br_md5sha1_ID:  return "MD5+SHA-1";
+	case br_md5_ID:      return "MD5";
+	case br_sha1_ID:     return "SHA-1";
+	case br_sha224_ID:   return "SHA-224";
+	case br_sha256_ID:   return "SHA-256";
+	case br_sha384_ID:   return "SHA-384";
+	case br_sha512_ID:   return "SHA-512";
 	default:
 		return "unknown";
 	}
